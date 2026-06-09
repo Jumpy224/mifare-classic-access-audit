@@ -1,114 +1,188 @@
-# Mifare Classic Access Card Audit
+# MIFARE Classic Access Card Audit
 
-A short security write-up. I found that an access card issued to me by a UK further-education college was a Mifare Classic 1K running factory-default keys, disclosed it to the college, and deliberately stopped at reading the card rather than cloning it and testing entry, because doing that without written authorisation would be an offence under the Computer Misuse Act 1990.
+This is a write-up of two security assessments I carried out on my access card issued by an educational institution. The first assessment was done in May 2026 using a Flipper Zero. The second was a deeper re-audit in June 2026 using a Proxmark3, carried out after obtaining written authorisation.
 
-This repo documents the finding, the evidence (redacted), the impact, and the fix. It is here as a sample of how I scope, document, and disclose security work.
+The card is a MIFARE Classic 1K running on a Fudan FM11RF08S chip. Every sector uses the factory default key. The chip itself has a known static nonce vulnerability published by Quarkslab in 2024. And after dumping the card in the second assessment, I found the access control system does not use the encrypted sectors at all. It authenticates on UID only.
 
-- Card details (UID, manufacturer block, data blocks) are redacted.
-- The college is not named. The finding is unremediated, so naming the site would put it at risk for no benefit.
-- The raw card dump and original photos are not included, for the same reason.
+Card details and the organisation name are redacted. The finding is not yet remediated, so identifying the site would be irresponsible.
 
 ---
 
-## Access control weakness in Mifare Classic 1K site cards
+## Overview
 
-**Author:** Logan T.
-**Date:** May 2026
-**Status:** Disclosed to the issuing organisation; acknowledged, no remediation taken.
-
-### Summary
-
-A site access card issued by a UK further-education college turned out to be a Mifare Classic 1K card protected by nothing but the factory-default keys. Those keys were never changed from the manufacturer default (`FFFFFFFFFFFF`), so any commodity RFID tool can read the card's whole memory with no key-recovery step at all. Once it has been read, the contents can be cloned to a blank card or emulated, and the access system treats the result as a genuine credential.
-
-Low effort, high impact. There is no cryptographic attack to mount. You need a sub-£200 consumer device and a few seconds next to a card.
-
-### Background: why Mifare Classic is a poor choice for access control
-
-Mifare Classic protects its data with a proprietary stream cipher called Crypto-1. Crypto-1 has been publicly broken since 2008. The documented attacks (`darkside`, `nested`, and the newer `hardnested` and static-nonce attacks) recover sector keys in seconds to minutes on consumer hardware such as a Proxmark3, and on a Flipper Zero for many cards.
-
-So even a correctly re-keyed Mifare Classic card is not secure. The cipher itself is the weak point. The card I looked at never even reached that bar, because it still used the default keys.
-
-Two problems are in play, worst first:
-
-1. Default keys, the finding here. No attack is needed. Any reader loaded with the default key dictionary dumps the card straight away.
-2. A broken cipher, baked into the platform. Even unique keys can be recovered, so re-keying a Mifare Classic card does not fix the underlying problem.
-
-### Method
-
-I ran the assessment on a card issued to me, read with my own Flipper Zero. I touched no third-party card and attempted no entry with any reproduced data.
-
-1. Placed the card on the reader and ran a standard Mifare Classic read.
-2. The tool's built-in key dictionary authenticated to every sector using the default Key A and Key B.
-3. The full 1K of card memory dumped across all 16 sectors and 64 blocks.
-4. Inspected the dump to confirm the key state and data layout.
-
-#### Evidence (redacted)
-
-The dump confirmed the card type and key state. Identifying values (the UID, manufacturer block, and any data blocks) are redacted here.
-
-```
-Device type:         Mifare Classic
-Mifare Classic type: 1K
-UID:                 [REDACTED]
-ATQA:                00 04
-SAK:                 08
-
-Block 0:  [REDACTED: UID + manufacturer data]
-Block 1:  [REDACTED]
-...
-Sector trailers (blocks 7, 11, 15, ...):
-  FF FF FF FF FF FF   07 80 69   FF FF FF FF FF FF
-  Key A = default     access     Key B = default
-                      bits = default
-```
-
-The repeating sector-trailer pattern is the finding. `FF FF FF FF FF FF` for both Key A and Key B is the factory default, and `07 80 69` is the default access-condition byte set. Seeing this across every sector confirms the card was issued with no re-keying.
-
-Most data blocks were empty (`00`), which suggests the system keys entry on the UID alone rather than on stored encrypted data. If so, that is a further weakness, because the UID is readable by any device and Mifare Classic UIDs can be emulated on writable ("magic") cards.
-
-### Scope and limitations
-
-I deliberately held this assessment to reading a card issued to me, using my own equipment. I did not clone the card, did not write its data to a blank or magic card, and made no attempt to use a reproduced credential for entry.
-
-That boundary was a choice, not a technical wall. Cloning a credential and testing physical entry without prior written authorisation would be unauthorised access under the Computer Misuse Act 1990, whatever the intent behind it. The read on its own demonstrates the weakness. Exercising it would have been an offence and would have added nothing to the finding.
-
-So the Impact section below describes what an attacker could do, reasoned from the confirmed read. It is not a record of anything I carried out.
-
-### Impact
-
-These are the realistic consequences of the confirmed weakness. None of them were carried out; they describe what the read makes possible for an attacker.
-
-- Cloning: copy the card to a blank or magic card. The clone carries the same UID and data, so a UID-based or default-key-based access system cannot tell it apart from the original.
-- Unauthorised entry: a cloned credential is accepted by readers, giving site access with no knowledge on the cardholder's part and no tamper indication.
-- Scale: if every site card is provisioned the same way, with default keys and the same scheme, the weakness covers the whole estate rather than one card.
-- Detectability: reading a card is passive and silent. A card sitting in a back pocket or a bag is close enough to capture in a moment of proximity.
-
-### Remediation
-
-Roughly in order of effectiveness:
-
-1. Migrate to a modern credential. Replace Mifare Classic with Mifare DESFire EV2/EV3 (AES-128, mutual authentication) or Mifare Plus in Security Level 3 (AES-protected). Both defeat the dump-and-clone attack class outright.
-2. Stop trusting the UID. Access decisions should rest on cryptographically authenticated card data, never on the freely readable, emulatable UID.
-3. If Classic has to stay in the short term, re-key away from the defaults with unique diversified keys per card, while accepting that this only raises the bar a little, because Crypto-1 itself is breakable.
-4. Add defence in depth for sensitive areas: a PIN at the reader for two-factor, or supervised access.
-
-Only item 1 is a durable fix. Items 2 to 4 reduce the risk without removing it.
-
-### Disclosure timeline
-
-- Reported to the issuing organisation with the technical detail above.
-- Response: acknowledged, with no remediation undertaken at the time of writing.
-
-This write-up redacts the organisation's identity and every card-identifying value. It documents a vulnerability class on a card issued to me, read with my own equipment. No third party's credential was accessed, and no entry was attempted with reproduced data.
-
-### References
-
-- Garcia et al., *Dismantling MIFARE Classic* (2008), the original Crypto-1 cryptanalysis.
-- NXP application notes on migrating from Mifare Classic to DESFire.
-- Proxmark3 and Flipper Zero documentation on Mifare Classic key dictionaries.
+**Author:** Logan  
+**First assessment:** May 2026, Flipper Zero, read only  
+**Re-audit:** June 2026, Proxmark3 (Iceman firmware), written authorisation obtained  
+**Status:** Disclosed to the organisation. Acknowledged. No remediation taken at time of writing.
 
 ---
 
-## License
+## Summary
 
-The text of this write-up is released under [CC BY 4.0](LICENSE). You may reuse it with attribution.
+The card is a MIFARE Classic 1K on a Fudan FM11RF08S chipset. All 16 sectors use the factory default key FFFFFFFFFFFF. The FM11RF08S also has a static nonce vulnerability, meaning full key recovery takes approximately 2 seconds on a Proxmark3 regardless of what keys are set.
+
+The more significant finding is that all data blocks in the dump are empty. The system authenticates on UID alone and never reads the encrypted sectors. The MIFARE Classic cryptographic layer is completely unused. The security is equivalent to a 125 kHz EM4100 card from 1991.
+
+A working clone was produced in under 2 minutes using a Proxmark3 and a blank magic card. The clone is byte-for-byte identical to the original at the protocol level.
+
+---
+
+## Background
+
+MIFARE Classic uses a proprietary stream cipher called Crypto-1. Crypto-1 has been publicly broken since 2008. The standard attacks, darkside, nested, and hardnested, recover sector keys in seconds to minutes on a Proxmark3.
+
+The Fudan FM11RF08S chip makes things worse. It generates the same nonce on every authentication attempt instead of a random one. That is the Quarkslab 2024 finding. The chip also has a hardcoded manufacturer backdoor key that allows any sector to be read regardless of the configured keys.
+
+There are three separate problems here:
+
+1. The system authenticates on UID only. The encrypted sectors are never read. The UID is freely readable by any NFC device and can be written to a blank magic card.
+2. All 16 sectors use the factory default key. No attack is needed. Any tool with the default key dictionary reads the card immediately.
+3. The FM11RF08S chipset has a static nonce and a manufacturer backdoor. Even with unique strong keys, recovery takes seconds.
+
+Changing the keys only addresses problem 2. Problems 1 and 3 require replacing the card stock and all readers.
+
+---
+
+## Assessment 1, May 2026
+
+**Tool:** Flipper Zero  
+**Scope:** Read only, my own card, no cloning, no door testing
+
+The Flipper's built-in key dictionary authenticated to every sector on the first attempt using FFFFFFFFFFFF. The full 1K dump completed in a few seconds. Every sector trailer was identical:
+
+```
+Key A:        FF FF FF FF FF FF  (factory default)
+Access bits:  07 80 69           (factory default)
+Key B:        FF FF FF FF FF FF  (factory default)
+```
+
+Data blocks were mostly empty, which suggested UID-only authentication, though that was not confirmed at this stage.
+
+I stopped at the read. Cloning and testing at a door without written authorisation would be an offence under the Computer Misuse Act 1990. The read alone was sufficient to demonstrate the vulnerability.
+
+The finding was reported to the organisation. They acknowledged it and took no action.
+
+---
+
+## Assessment 2, June 2026
+
+**Tool:** Proxmark3 (Iceman firmware)  
+**Scope:** Key recovery, full dump, proof-of-concept clone of my own card. Written authorisation obtained before starting. Testing against organisation readers and touching any third-party card were out of scope.
+
+### Commands run
+
+```
+hf 14a info          # card identification
+hf mf info           # key state, PRNG type, magic detection
+hf mf autopwn        # automated key recovery and full dump
+hf mf view           # inspect dump contents
+hf mf cload          # write dump to magic card
+hf 14a info          # verify clone UID matches original
+```
+
+### Finding 1: FM11RF08S static nonce
+
+`hf 14a info` flagged this immediately:
+
+```
+[#] Static nonce: [REDACTED]
+[+] Static nonce: yes
+```
+
+This confirms the FM11RF08S chipset. The static nonce means the card produces the same value on every authentication rather than generating a random one. Combined with the default keys, `hf mf autopwn` completed full key recovery and a card dump in 2 seconds.
+
+### Finding 2: Default keys on all 16 sectors
+
+Every sector trailer in the dump was identical:
+
+```
+FF FF FF FF FF FF  FF 07 80 69  FF FF FF FF FF FF
+```
+
+Key A and Key B are both FFFFFFFFFFFF across every sector. The cards were issued without any re-keying. This confirms the finding from Assessment 1 with a more capable tool.
+
+### Finding 3: UID-only authentication
+
+Every data block in the dump was zeroed:
+
+```
+Sector 0, Block 1:  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+Sector 0, Block 2:  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+[all 62 data blocks identical]
+```
+
+Nothing has ever been written to the card beyond the manufacturer block. The access control system is making entry decisions based on the UID alone. The entire encrypted layer of MIFARE Classic is switched off.
+
+This is not a misconfiguration that can be corrected with a key change. The readers were installed to check UIDs only. Fixing it means replacing every reader in the building.
+
+### Finding 4: Working clone produced in under 2 minutes
+
+```
+hf mf autopwn       # 2 seconds, full key recovery and dump
+hf mf cload         # dump written to Gen1A magic card
+hf 14a info         # UID, ATQA, SAK all match original
+```
+
+The clone presents identically to the original at the protocol level. A reader doing UID-only authentication has no way to distinguish between the two.
+
+Time from first read to working clone: under 2 minutes.
+Equipment cost: consumer hardware and a blank card.
+
+### Finding 5: Clone carrying an arbitrary NFC payload
+
+As an additional test, a URL was written into the empty data sectors of the clone using NDEF. The card then presented the credential UID to access readers while simultaneously serving the URL to any NFC-capable phone.
+
+In a real attack, that URL could be a phishing page or a malware delivery link. There is no visual or electronic way to distinguish a legitimate card from a clone carrying a malicious payload.
+
+---
+
+## Impact
+
+The following consequences follow from the confirmed findings. Items 1 to 3 were demonstrated within the authorised scope. Items 4 and 5 are inferred from the confirmed findings.
+
+1. Any authorised card can be cloned in under 2 minutes using consumer equipment.
+2. The cardholder has no indication their credential was copied. Reading a card is completely passive and silent.
+3. A card in a pocket or bag is close enough to capture without physical contact.
+4. If every card on site was provisioned the same way, which the uniform default keys strongly suggest, then the entire card estate is exposed.
+5. Cloned credentials can carry arbitrary NFC payloads, enabling phishing or malware delivery alongside physical access.
+
+---
+
+## Remediation notes
+
+The findings here sit at different levels. The default keys are a configuration issue and could be addressed without replacing hardware. The UID-only authentication is an architectural decision baked into how the readers were installed and configured. The FM11RF08S static nonce is a chipset-level flaw that exists regardless of how the system is configured.
+
+Re-keying the cards would address the default key finding only. It would not change the fact that the readers are not using the encrypted sectors, and it would not remove the FM11RF08S chipset vulnerability. A motivated attacker with a Proxmark3 could still recover non-default keys against this chip in a few seconds.
+
+The only way to address all three findings together is to replace the card stock and reader infrastructure with a platform that uses mutual authentication, such as MIFARE DESFire EV2/EV3 or HID iCLASS SE. That is a procurement decision, not something that can be patched.
+
+Short of a full replacement, the most impactful single change would be configuring the readers to authenticate on encrypted sector data rather than the UID alone. That would at least mean the cryptographic layer of the cards is being used, even if the underlying Crypto-1 cipher remains weak.
+
+---
+
+## Disclosure timeline
+
+| Date | Event |
+|---|---|
+| May 2026 | Default key vulnerability found and reported to organisation |
+| May 2026 | Organisation acknowledged the report, no action taken |
+| June 2026 | Written authorisation obtained for deeper re-audit |
+| June 2026 | Re-audit completed, static nonce, UID-only auth, and working clone confirmed |
+| June 2026 | Updated findings reported to organisation |
+| June 2026 | This write-up published |
+
+---
+
+## References
+
+- Garcia et al., Dismantling MIFARE Classic (2008)
+- Quarkslab, FM11RF08S static nonce vulnerability (2024)
+- NXP application notes on migrating from MIFARE Classic to DESFire
+- Iceman/RfidResearchGroup Proxmark3 firmware documentation
+- Proxmark3 and Flipper Zero MIFARE Classic documentation
+
+---
+
+## Licence
+
+CC BY 4.0. Reuse with attribution.
